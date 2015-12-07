@@ -1,6 +1,6 @@
 /*
  * Nixie_Display_Backplane by Jonathan Zepp - @DaJMasta
- * Version 2 - December 7, 2015
+ * Version 3 - December 7, 2015
  * For the Not Your Average Nixie Clock project
  * 
  * Programmed to an arduino nano in the backplane, this software reads the required sensors and controls the driver boards.  Includes
@@ -42,8 +42,8 @@
 #include <CapacitiveSensor.h>
 #include <EEPROM.h>
 
-byte brightness, displayStage, testStage, dateInterval, dateFrequency ;
-int nDevices, altitudeM ;
+byte brightness, displayStage, testStage, dateInterval, dateFrequency, nDevices ;
+int altitudeM ;
 float humidity, fahrenheit ;
 double barometerTemperature, pressure, relPressure ;
 byte i2cDevices[13], driverAddresses[10], tubeTypes[10], driverFirmwares[10] ;
@@ -84,7 +84,7 @@ void setup() {                                                      //Initializa
   digitalWrite(resetPin, HIGH) ;
   delay(3000) ;
 
-  for(int i = 0; i < 13; i++)
+  for(byte i = 0; i < 13; i++)
     i2cDevices[i] = 255 ;
 
   Serial.print("I2C bus scan: ") ;
@@ -134,7 +134,7 @@ void setup() {                                                      //Initializa
 
   allTubes('N') ;
 
-  for(int i = 0; i < 10; i++){
+  for(byte i = 0; i < 10; i++){
     writeDecimals[i] = false ;
     toWrite[i] = ' ' ;
     currentDisplays[i] = ' ' ;
@@ -147,7 +147,7 @@ void setup() {                                                      //Initializa
   calcBrightness() ;
   readTempHumPres() ;   
   
-  Serial.println("Initialization complete!") ;
+  Serial.println("Startup complete!") ;
   lastStageChange = millis() ;
   lastSensorRead = millis() ;
 }
@@ -166,7 +166,7 @@ void loop() {                                                                   
           lastStageChange = millis() ;
           allTubes('N') ;
           touchStart = 0 ;
-          for(int i = 0; i < 10; i++){
+          for(byte i = 0; i < 10; i++){
             currentDisplays[i] = ' ' ;
             displayedDecimals[i] = false ;
           }
@@ -194,7 +194,7 @@ void loop() {                                                                   
         else if(testStage > 0){
           if(testStage == 1){
             allTubes('N') ;
-            for(int i = 0; i < 10; i++){
+            for(byte i = 0; i < 10; i++){
               currentDisplays[i] = ' ' ;
               displayedDecimals[i] = false ;
           }
@@ -229,7 +229,7 @@ void loop() {                                                                   
       testStage++ ;
       lastStageChange = millis() ;
       allTubes('N') ;
-      for(int i = 0; i < 10; i++){
+      for(byte i = 0; i < 10; i++){
         currentDisplays[i] = ' ' ;
         displayedDecimals[i] = false ;
       }
@@ -465,7 +465,7 @@ void readTubeDrivers(){
   char replyData[7] ;
   byte driverCount = 0 ;
   
-  for(int i = 0; i <10; i++){
+  for(byte i = 0; i <10; i++){
     driverAddresses[i] = 255 ;
     tubeTypes[i] = 0 ;
     tubeStates[i] = 0 ;
@@ -479,7 +479,7 @@ void readTubeDrivers(){
 
       while(Wire.available() < 7){} ;
   
-      for(int i = 0; i < 7; i++){
+      for(byte i = 0; i < 7; i++){
         replyData[i] = Wire.read() ;
       }  
   
@@ -514,8 +514,8 @@ void readTubeDrivers(){
 }
 
 void listDrivers(){
-  Serial.print("Driver list: ") ;
-  for(int i = 0; i < 10; i++){
+  Serial.print("Drivers: ") ;
+  for(byte i = 0; i < 10; i++){
     if(driverAddresses[i] != 255){
       if(i > 0)
         Serial.print(", ") ;
@@ -546,7 +546,7 @@ void listDrivers(){
                   break ;
         case 'T': Serial.print(" in test mode") ;
                   break ;
-        default:  Serial.print(" in an invalid mode") ;
+        default:  Serial.print(" invalid mode") ;
                   break ;
       }
     }
@@ -561,7 +561,7 @@ void driverReset(){                                                        //Ful
   digitalWrite(resetPin, HIGH) ;
   delay(3000) ;
 
-  for(int i = 0; i < 10; i++){
+  for(byte i = 0; i < 10; i++){
     writeDecimals[i] = false ;
     toWrite[i] = ' ' ;
     currentDisplays[i] = ' ' ;
@@ -573,7 +573,7 @@ void driverReset(){                                                        //Ful
 }
 
 void writeAll(){
-  for(int i = 0; i < 10; i++){
+  for(byte i = 0; i < 10; i++){
     if(driverAddresses[i] != 255){
       if(writeDecimals[i] != displayedDecimals[i] || toWrite[i] != currentDisplays[i]){
         Wire.beginTransmission(driverAddresses[i]) ;
@@ -589,7 +589,7 @@ void writeAll(){
 }
 
 void allTubes(char command){
-  for(int i = 0; i < 10; i++){
+  for(byte i = 0; i < 10; i++){
     if(driverAddresses[i] != 255){
       Wire.beginTransmission(driverAddresses[i]) ;
       Wire.write(command) ;
@@ -610,12 +610,12 @@ void staggeredWrite(){
   toWrite[8] = 'M' ;
   toWrite[9] = 'P' ;
       
-  for(int i = 0; i < 10; i++)
+  for(byte i = 0; i < 10; i++)
     writeDecimals[i] = false ;
     
   writeDecimals[1] = true ;
         
-  for(int i = 0; i < 10; i++){
+  for(byte i = 0; i < 10; i++){
     if(driverAddresses[i] != 255 && testStage - 2 >= i){
       if(writeDecimals[i] != displayedDecimals[i] || toWrite[i] != currentDisplays[i]){
         Wire.beginTransmission(driverAddresses[i]) ;
@@ -635,28 +635,28 @@ void mapToDisplay(String toDisplay){
   byte numDecimals = 0 ;
   byte decimalOffset = 0 ;
   
-  for(int i = 0; i < 10; i++){
+  for(byte i = 0; i < 10; i++){
     if(driverAddresses[i] != 255)
       numTubes++ ;
     writeDecimals[i] = false ;
     toWrite[i] = ' ' ;
   }
 
-  for(int i = 0; i < toDisplay.length(); i++)
+  for(byte i = 0; i < toDisplay.length(); i++)
     if(toDisplay.charAt(i) == '.')
       numDecimals++ ;
       
   if(toDisplay.length() - numDecimals > numTubes){
     Serial.print(toDisplay) ;
-    Serial.println(" is too long to display") ;
+    Serial.println(" is too long") ;
     toDisplay.substring(0, numTubes - 1 - numDecimals) ;
   }
   else if(toDisplay.length() - numDecimals < numTubes){
-    for(int i = 0; i < numTubes - toDisplay.length() + numDecimals; i++)
+    for(byte i = 0; i < numTubes - toDisplay.length() + numDecimals; i++)
       toDisplay += " " ;
   }
 
-  for(int i = 0; i < 10; i++){
+  for(byte i = 0; i < 10; i++){
     if(toDisplay.charAt(i + decimalOffset) == '.'){
       writeDecimals[i] = true ;
       decimalOffset++ ;
@@ -668,14 +668,14 @@ void mapToDisplay(String toDisplay){
     else {
       Serial.print("Tube ") ;
       Serial.print(i) ;
-      Serial.print(" cannot display: ") ;
+      Serial.print(" can't display: ") ;
       Serial.println(toDisplay.charAt(i + decimalOffset)) ;
     }
 
     if(tubeTypes[i] != 2 && writeDecimals[i]){
       Serial.print("Tube ") ;
       Serial.print(i) ;
-      Serial.println(" cannot display: .") ;
+      Serial.println(" can't display: .") ;
     }
   }
 }
@@ -698,7 +698,7 @@ byte requiredTube(char toDisplay){
 }
 
 bool checkTouch(){
-  long check = displayHousing.capacitiveSensor(100) ;
+  int check = displayHousing.capacitiveSensor(100) ;
   
   if(check > 3400)
     return true ;
@@ -721,17 +721,33 @@ void fullReport(){
   Serial.print(pressure) ;
   Serial.print(" millibar, ") ;
   Serial.print(brightness) ;
-  Serial.print(" brightness,") ;
-  Serial.print(checkTouch()) ;
-  Serial.println(" touch button") ;
+  Serial.println(" brightness") ;
   Serial.print("Displaying: ") ;
-  for(int i = 0; i < 10; i++){
+  for(byte i = 0; i < 10; i++){
     if(displayedDecimals[i])
       Serial.print(".") ;
     Serial.print(currentDisplays[i]) ;
   }
   Serial.println() ;
   listDrivers() ;
+}
+
+void storableDisplay(){
+  Serial.println("EEPROM Storable settings:") ;
+  Serial.print("Show seconds? ") ;
+  Serial.print(bDisplaySeconds) ;
+  Serial.print(", altitude: ") ;
+  Serial.print(altitudeM) ;     
+  Serial.print("m, show relative pressure? ") ;                             
+  Serial.print(bRelativePressure) ;
+  Serial.print(",cycles per date display: ") ;
+  Serial.println(dateFrequency) ;                            
+  Serial.print("Date/Temp/Hum/Pres display duration: ") ;
+  Serial.print(displayStageDuration) ;
+  Serial.print(",time display duration: ") ;
+  Serial.print(displayStagePrimaryDuration) ;
+  Serial.print(", driver LEDs enabled? ") ;
+  Serial.println(bDriverLightEnable) ;
 }
 
 /* Serial commands:
@@ -762,11 +778,11 @@ void fullReport(){
 
 void recieveSerial(){
   char inputBuffer[22] ;
-  int counter = 0 ;
+  byte counter = 0 ;
   String toWrite = "" ;
   EEPROMBlock readFromEEPROM ;
 
-  for(int i = 0; i < 22; i++)
+  for(byte i = 0; i < 22; i++)
     inputBuffer[i] = ' ' ;
   
   if(Serial.available()){
@@ -801,7 +817,7 @@ void recieveSerial(){
     }
     else if(inputBuffer[0] == 'C' && inputBuffer[1] == 'D'){                //Read
       Serial.print("Current display: ") ;
-      for(int i = 0; i < 10; i++){
+      for(byte i = 0; i < 10; i++){
         if(displayedDecimals[i])
           Serial.print(".") ;
         Serial.print(currentDisplays[i]) ;
@@ -822,7 +838,7 @@ void recieveSerial(){
       lastStageChange = millis() ;
       allTubes('N') ;
       touchStart = 0 ;
-      for(int i = 0; i < 10; i++){
+      for(byte i = 0; i < 10; i++){
         currentDisplays[i] = ' ' ;
        displayedDecimals[i] = false ;
       }
@@ -836,21 +852,7 @@ void recieveSerial(){
       driverReset() ;
     }
     else if(inputBuffer[0] == 'R' && inputBuffer[1] == 'C'){                //Current storable settings
-      Serial.println("EEPROM Storable settings:") ;
-      Serial.print("Display seconds? ") ;
-      Serial.print(bDisplaySeconds) ;
-      Serial.print(", altitude: ") ;
-      Serial.print(altitudeM) ;     
-      Serial.print("m, show relative pressure? ") ;                             
-      Serial.print(bRelativePressure) ;
-      Serial.print(",cycles per date display: ") ;
-      Serial.println(dateFrequency) ;                            
-      Serial.print("Date/Temp/Hum/Pres display duration: ") ;
-      Serial.print(displayStageDuration) ;
-      Serial.print(",time display duration: ") ;
-      Serial.print(displayStagePrimaryDuration) ;
-      Serial.print(", driver LEDs enabled? ") ;
-      Serial.println(bDriverLightEnable) ;
+      storableDisplay() ;
     }
     else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'A'){                //Altitude
       counter = 2 ;
@@ -882,7 +884,7 @@ void recieveSerial(){
       else if(inputBuffer[2] == 'N')
         bDisplaySeconds = false ;
 
-      Serial.print("Display seconds? ") ;
+      Serial.print("Show seconds? ") ;
       if(bDisplaySeconds)
         Serial.println("Yes") ;
       else
@@ -897,7 +899,7 @@ void recieveSerial(){
   
       dateFrequency = toWrite.toInt() ;
 
-      Serial.print("Cycles between date displays: ") ;
+      Serial.print("Cycles per date display: ") ;
       Serial.println(dateFrequency) ;
     }
     else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'T'){                //Time display duration
@@ -908,7 +910,7 @@ void recieveSerial(){
       }
   
       displayStagePrimaryDuration = toWrite.toFloat() ;
-      Serial.print("Time display duration: ") ;
+      Serial.print("Primary display duration: ") ;
       Serial.print(displayStagePrimaryDuration) ;
       Serial.println("ms") ;
     }
@@ -920,7 +922,7 @@ void recieveSerial(){
       }
   
       displayStageDuration = toWrite.toFloat() ;
-      Serial.print("Date/Temp/Hum/Press display duration: ") ;
+      Serial.print("Secondary display duration: ") ;
       Serial.print(displayStageDuration) ;
       Serial.println("ms") ;
     }
@@ -930,7 +932,7 @@ void recieveSerial(){
       lastStageChange = millis() ;
       allTubes('N') ;
       touchStart = 0 ;
-      for(int i = 0; i < 10; i++){
+      for(byte i = 0; i < 10; i++){
         currentDisplays[i] = ' ' ;
        displayedDecimals[i] = false ;
       }
@@ -958,7 +960,7 @@ void recieveSerial(){
         allTubes('Q') ;
       else
         allTubes('L') ;
-      Serial.println("EEPROM settings loaded") ;
+      Serial.println("EEPROM loaded") ;
     }
     else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'X'){                //Load from eeprom
       allTubes('Q') ;
@@ -983,10 +985,10 @@ void recieveSerial(){
 
       EEPROM.put(0, readFromEEPROM) ;
 
-      Serial.println("EEPROM settings stored") ;
+      Serial.println("EEPROM written") ;
     }
     else
-      Serial.println("Unrecognized command") ;
+      Serial.println("Bad command") ;
   }
 }
 
