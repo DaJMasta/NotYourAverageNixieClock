@@ -24,3 +24,4 @@ BMP 180 pressure sensor module
 NCH6100HV Nixie power supply from Nixieclock.org
 
 For more information, pictures, and video of some of the features, the project's homepage is here:
+http://medpants.com/not-your-average-nixie-clock
