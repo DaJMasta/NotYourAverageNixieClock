@@ -348,13 +348,13 @@ void checkDST(){
     
   if (month() == 3){                                      //In march, we are DST if our previous sunday was on or after the 8th.
     bIsDST = previousSunday >= 8 ;
-    if(bIsDST)
+    if(bIsDST && previousSunday <= 15 && dow(year(), month(), day()) == 0)
       bIsChangeDay = true ;
     return ;
   } 
                                                       //In november we must be before the first sunday to be dst.                                             
   bIsDST = previousSunday <= 0 ;                      //That means the previous sunday must be before the 1st.
-  if(bIsDST)
+  if(bIsDST & previousSunday == 0)
     bIsChangeDay = true ;
 }
 
