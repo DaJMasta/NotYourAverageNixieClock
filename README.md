@@ -2,12 +2,15 @@
 Arduino and ATMega328 based nixie clock/indoor weather station programmable display using IN-12/IN-15 tubes
 By: Jonathan Zepp - @DaJMasta - http://medpants.com
 
-December 7, 2015 initial release v1.0
+March 18, 2016 updated release v1.1
+
+Update includes DST calculation (USA localization), a command for setting the RTC when installed in the clock without reflashing the Arduino nano, a fix for a minor bug, and a processing sketch to upload time to the clock's RTC.
 
 Included:
 driver_module.ino is the firmware for each of the 10 nixie driver boards running ATMega328 chips without external crystals
 nixie_display_backplane.ino is the software for the backplane and handles all of the serial interface, sensor reading, and module commands
 boards.txt is a modified arduino on a breadboard file to allow running both 328s and 328ps in 8MHz no external crystal mode - you install the breadboard package normally, then replace the boards.txt file with this one
+SyncNixieClockRTC.pde - a Processing sketch to upload time to the onboard RTC with the correct header (adapted from the one included with the Arduino software)
 The schematics are included as .png files generated in TinyCAD
 
 Dependancies:

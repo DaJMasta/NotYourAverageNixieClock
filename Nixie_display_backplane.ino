@@ -1,12 +1,16 @@
 /*
  * Nixie_Display_Backplane by Jonathan Zepp - @DaJMasta
- * Version 3 - December 7, 2015
+ * Version 3.2 - March 17, 2016
  * For the Not Your Average Nixie Clock project
  * 
  * Programmed to an arduino nano in the backplane, this software reads the required sensors and controls the driver boards.  Includes
  * an RTC, a temperature and humidity sensor, a barometric pressure sensor, a potentiometer to control brightness, and a capacitive
  * touch sensor to change display modes easily.  Reports actions and errors over a host serial connection and the display can be
  * fully controlled through it.  Translates String input to each tube and checks if they are capable of displaying the character needed.
+ * 
+ * ver 3.2 changes: 
+ * added serial command to set the RTC without having to reflash the chip and use a different sketch
+ * added automatic DST compensation and an on/off option stored in eeprom
  * 
  * Built in Arduino iDE 1.6.5
  * Uses:
@@ -33,6 +37,7 @@
 #define sensorReadDelay 3000
 #define inputPollDelay 33                                             //30 FPS touch speed
 #define tempOffset -6.7
+#define shortPressReset 10000
 
 #include <dht.h>
 #include <Wire.h>
@@ -49,8 +54,8 @@ double barometerTemperature, pressure, relPressure ;
 byte i2cDevices[13], driverAddresses[10], tubeTypes[10], driverFirmwares[10] ;
 char tubeStates[10], currentDisplays[10], toWrite[10] ;
 bool writeDecimals[10], displayedDecimals[10] ;
-long touchStart, lastStageChange, lastSensorRead, lastTouchCheck ;
-bool bLongPressLock, bDisplaySeconds, bRelativePressure, bDriverLightEnable ;
+unsigned long touchStart, lastStageChange, lastSensorRead, lastTouchCheck ;
+bool bLongPressLock, bDisplaySeconds, bRelativePressure, bDriverLightEnable, bIsDST, bUseDST, bIsChangeDay, bDSTChecked ;
 unsigned int displayStageDuration, displayStagePrimaryDuration ;
 
 dht tempHumSensor ;
@@ -64,6 +69,7 @@ struct EEPROMBlock{
   bool bDisplaySeconds ;
   bool bRelativePressure ;
   bool bDriverLightEnable ;
+  bool bUseDST ;
   byte dateFrequency ;
 } ;
 
@@ -87,7 +93,7 @@ void setup() {                                                      //Initializa
   for(byte i = 0; i < 13; i++)
     i2cDevices[i] = 255 ;
 
-  Serial.print("I2C bus scan: ") ;
+  Serial.print("I2C bus: ") ;
 
   nDevices = 0 ;
   scanI2cBus() ;
@@ -96,12 +102,12 @@ void setup() {                                                      //Initializa
 
   setSyncProvider(RTC.get);
   if(timeStatus()!= timeSet) 
-     Serial.println("RTC sync error");
+     Serial.println("RTC error");
   else
-     Serial.println("RTC time set");      
+     Serial.println("RTC set");      
 
   if(pressureSensor.begin())
-    Serial.println("Barometer initialized") ;
+    Serial.println("Barometer init") ;
   else
     Serial.println("Barometer error") ;
 
@@ -118,6 +124,7 @@ void setup() {                                                      //Initializa
   bLongPressLock = false ;
   lastTouchCheck = 0 ;
   dateInterval = 0 ;
+  bDSTChecked = false ;
   
   EEPROM.get(0, readFromEEPROM) ;
 
@@ -128,6 +135,7 @@ void setup() {                                                      //Initializa
   displayStageDuration = readFromEEPROM.displayStageDuration ;
   displayStagePrimaryDuration = readFromEEPROM.displayStagePrimaryDuration ;
   bDriverLightEnable = readFromEEPROM.bDriverLightEnable ;
+  bUseDST = readFromEEPROM.bUseDST ;
 
   if(!bDriverLightEnable)                                               //Assumes drivers default to on
     allTubes('Q') ;
@@ -141,13 +149,14 @@ void setup() {                                                      //Initializa
     displayedDecimals[i] = false ;
   }
 
+  checkDST() ;
   readTubeDrivers() ;
   listDrivers() ;
 
   calcBrightness() ;
   readTempHumPres() ;   
   
-  Serial.println("Startup complete!") ;
+  Serial.println("Setup complete!") ;
   lastStageChange = millis() ;
   lastSensorRead = millis() ;
 }
@@ -156,7 +165,7 @@ void setup() {                                                      //Initializa
 void loop() {                                                                               //Main loop
   if(lastTouchCheck + inputPollDelay <= millis()){
     if(checkTouch()){                                                                         //Capacitive touch sensing for changing display modes
-      if(touchStart == 0)
+      if(touchStart == 0 || touchStart + shortPressReset < shortPressReset)
         touchStart = millis() ;
       else if(touchStart + longPressDuration <= millis() && !bLongPressLock){
         if(testStage > 0){
@@ -180,7 +189,7 @@ void loop() {                                                                   
           touchStart = 0 ;
         }
         else {
-          Serial.println("Long Press") ;
+          Serial.println("Long press") ;
           touchStart = 0 ;
         }
       }
@@ -203,7 +212,7 @@ void loop() {                                                                   
           lastStageChange = millis() ;
         }
         else
-          Serial.println("Short Press") ;
+          Serial.println("Short press") ;
       }
       touchStart = 0 ;
       bLongPressLock = false ;
@@ -253,6 +262,11 @@ void loop() {                                                                   
   }
   
   calcBrightness() ;
+
+  if(minute() < 1  && !bDSTChecked)
+    checkDST() ;
+  else if(minute() > 0)
+    bDSTChecked = false ;
   
   switch(displayStage){
     case 1:   mapToDisplay(clockDisplay()) ;
@@ -312,6 +326,38 @@ void readTempHumPres(){
   fahrenheit += 32 + tempOffset ;
 }
 
+int dow(int y, int m, int d){                                         //Sakamoto's Algorithm
+  static int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4} ;
+  y -= m < 3 ;
+  return (y + y/4 - y/100 + y/400 + t[m-1] + d) % 7 ;
+}
+
+void checkDST(){
+  bIsChangeDay = false ;
+  bDSTChecked = true ;
+  
+  if (month() < 3 || month() > 11){                     //January, february, and december are out.
+    bIsDST = false ;
+    return ;
+  } 
+  if (month() > 3 && month() < 11){                       //April to October are in
+    bIsDST = true ;
+    return ;
+    } 
+  int previousSunday = day() - dow(year(), month(), day()) ; 
+    
+  if (month() == 3){                                      //In march, we are DST if our previous sunday was on or after the 8th.
+    bIsDST = previousSunday >= 8 ;
+    if(bIsDST)
+      bIsChangeDay = true ;
+    return ;
+  } 
+                                                      //In november we must be before the first sunday to be dst.                                             
+  bIsDST = previousSunday <= 0 ;                      //That means the previous sunday must be before the 1st.
+  if(bIsDST)
+    bIsChangeDay = true ;
+}
+
 String clockDisplay(){
   String toReturn = "" ;
   int temp ;
@@ -319,6 +365,14 @@ String clockDisplay(){
   
   if(bDisplaySeconds){
     temp = hour() ;
+
+    if(bUseDST && bIsDST){
+      if(!bIsChangeDay || (bIsChangeDay && month() == 3 && hour() > 1) || (bIsChangeDay && month() == 11 && hour() < 2)){
+        temp++ ;
+        if(temp > 23)
+          temp -= 24 ;
+      }
+    }
     if(temp >= 12)
       bPM = true ;
     if(temp > 12)
@@ -350,6 +404,13 @@ String clockDisplay(){
     toReturn += " " ;
     
     temp = hour() ;
+    if(bUseDST && bIsDST){
+      if(!bIsChangeDay || (bIsChangeDay && month() == 3 && hour() > 1) || (bIsChangeDay && month() == 11 && hour() < 2)){
+        temp++ ;
+        if(temp > 23)
+          temp -= 24 ;
+      }
+    }
     if(temp > 12){
       temp -= 12 ;
       bPM = true ;
@@ -379,21 +440,85 @@ String dateDisplay(){
   String toReturn = " " ;
   int temp ;
 
-  temp = month() ;
-  if(temp < 10)
-    toReturn += " " ;
-  toReturn += temp ;
-  toReturn += "." ;
-  temp = day() ;
-  if(temp < 10)
-    toReturn += "0" ;
-  toReturn += temp ;
-  toReturn += "." ;
+  if(bUseDST && bIsDST && hour() > 22){
+    switch(month()){
+      case 3:   
+      case 5:   
+      case 7:       
+      case 8:   
+      case 10:  if(day() > 30){
+                   temp = month() + 1 ;
+                  if(temp < 10)
+                    toReturn += " " ;
+                  toReturn += temp ;
+                  toReturn += "." ;
+                  temp = 1 ;
+                  if(temp < 10)
+                    toReturn += "0" ;
+                  toReturn += temp ;
+                  toReturn += "." ;
+                }
+                else{
+                  temp = month() ;
+                  if(temp < 10)
+                    toReturn += " " ;
+                  toReturn += temp ;
+                  toReturn += "." ;
+                  temp = day() + 1 ;
+                  if(temp < 10)
+                    toReturn += "0" ;
+                  toReturn += temp ;
+                  toReturn += "." ;
+                }
+                break ;
+      case 4:          
+      case 6:   
+      case 9:   if(day() > 29){
+                   temp = month() + 1 ;
+                  if(temp < 10)
+                    toReturn += " " ;
+                  toReturn += temp ;
+                  toReturn += "." ;
+                  temp = 1 ;
+                  if(temp < 10)
+                    toReturn += "0" ;
+                  toReturn += temp ;
+                  toReturn += "." ;
+                }
+                else{
+                  temp = month() ;
+                  if(temp < 10)
+                    toReturn += " " ;
+                  toReturn += temp ;
+                  toReturn += "." ;
+                  temp = day() + 1 ;
+                  if(temp < 10)
+                    toReturn += "0" ;
+                  toReturn += temp ;
+                  toReturn += "." ;
+                }
+                break ;
+       default: Serial.println("DST date error") ;
+                break ;
+    }
+  }
+  else{
+    temp = month() ;
+    if(temp < 10)
+      toReturn += " " ;
+    toReturn += temp ;
+    toReturn += "." ;
+    temp = day() ;
+    if(temp < 10)
+      toReturn += "0" ;
+    toReturn += temp ;
+    toReturn += "." ;
+  }
+
   temp = year() ;
   if(temp % 100 < 10)
     toReturn += "0" ;
   toReturn += temp % 100 ;
-
   toReturn += "   " ;
 
   return toReturn ;
@@ -523,9 +648,9 @@ void listDrivers(){
         Serial.println() ;
         
       Serial.print(driverAddresses[i]) ;
-      Serial.print(" version: ") ;
+      Serial.print(" ver: ") ;
       Serial.print(driverFirmwares[i]) ;
-      Serial.print(" running: ") ;
+      Serial.print(" tube: ") ;
       switch(tubeTypes[i]){
         case 1: Serial.print("IN-12A") ;
                 break ;
@@ -539,14 +664,14 @@ void listDrivers(){
                 break ;
       }
       switch(tubeStates[i]){
-        case 'E': Serial.print(" in normal mode displaying: ") ;
+        case 'E': Serial.print(" is showing: ") ;
                   Serial.print(currentDisplays[i]) ;
                   break ;
         case 'D': Serial.print(" and is disabled") ;
                   break ;
         case 'T': Serial.print(" in test mode") ;
                   break ;
-        default:  Serial.print(" invalid mode") ;
+        default:  Serial.print(" bad mode") ;
                   break ;
       }
     }
@@ -700,7 +825,7 @@ byte requiredTube(char toDisplay){
 bool checkTouch(){
   int check = displayHousing.capacitiveSensor(100) ;
   
-  if(check > 3400)
+  if(check > 2250)
     return true ;
   return false ;
 }
@@ -709,10 +834,15 @@ void fullReport(){
   Serial.println("Full readout:") ;
   Serial.print("Uptime: ") ;
   Serial.print(millis()) ;
-  Serial.print(", system time: ") ;
+  Serial.print(", time: ") ;
   Serial.print(clockDisplay()) ;
   Serial.print(" ") ;
-  Serial.println(dateDisplay()) ;
+  Serial.print(dateDisplay()) ;
+  Serial.print(" DST ") ;
+  if(bIsDST)
+    Serial.println("on") ;
+  else
+    Serial.println("off") ;
   Serial.print("Sensors: temp ") ;
   Serial.print(fahrenheit) ;
   Serial.print("F, ") ;
@@ -742,12 +872,14 @@ void storableDisplay(){
   Serial.print(bRelativePressure) ;
   Serial.print(",cycles per date display: ") ;
   Serial.println(dateFrequency) ;                            
-  Serial.print("Date/Temp/Hum/Pres display duration: ") ;
+  Serial.print("Date/Temp/Hum/Pres show duration: ") ;
   Serial.print(displayStageDuration) ;
-  Serial.print(",time display duration: ") ;
+  Serial.print(",time show duration: ") ;
   Serial.print(displayStagePrimaryDuration) ;
   Serial.print(", driver LEDs enabled? ") ;
   Serial.println(bDriverLightEnable) ;
+  Serial.print(", use DST? ") ;
+  Serial.println(bUseDST) ;
 }
 
 /* Serial commands:
@@ -765,11 +897,13 @@ void storableDisplay(){
  * SA - Set altitude
  * SP - Set bRelativePressure Y/N
  * SS - Set bDisplaySeconds Y/N
+ * SY - Set bUseDST Y/N
  * SF - Set date display frequency
  * ST - Set time display duration (milliseconds)
  * SD - Set date/temp/humidity/pressure display duration (milliseconds)
  * SX - Driver lights off
  * SL - Driver lights on
+ * SR - Set RTC millisecond count
  * DF - Revert to default settings
  * LD - Load settings from eeprom
  * 
@@ -808,12 +942,12 @@ void recieveSerial(){
       testStage = 0 ;
       displayStage = 0 ;
       allTubes('N') ;
-      Serial.println("Controlled by host") ;
+      Serial.println("Controlled mode") ;
     }
     else if(inputBuffer[0] == 'X' && inputBuffer[1] == 'D'){                //Clear
       mapToDisplay("          ") ;
       writeAll() ;
-      Serial.println("Display Cleared") ;
+      Serial.println("Display cleared") ;
     }
     else if(inputBuffer[0] == 'C' && inputBuffer[1] == 'D'){                //Read
       Serial.print("Current display: ") ;
@@ -830,7 +964,7 @@ void recieveSerial(){
       lastStageChange = millis() ;
       allTubes('T') ;
       touchStart = 0 ;
-      Serial.println("Enter test mode") ;
+      Serial.println("Test mode") ;
     }
     else if(inputBuffer[0] == 'N' && inputBuffer[1] == 'M'){                //Normal
       displayStage = 1 ;
@@ -842,7 +976,7 @@ void recieveSerial(){
         currentDisplays[i] = ' ' ;
        displayedDecimals[i] = false ;
       }
-      Serial.println("Enter normal mode") ;
+      Serial.println("Normal mode") ;
     }
     else if(inputBuffer[0] == 'R' && inputBuffer[1] == 'T'){                //Tubes
       readTubeDrivers() ;
@@ -872,8 +1006,20 @@ void recieveSerial(){
       else if(inputBuffer[2] == 'N')
         bRelativePressure = false ;
 
-      Serial.print("Show relative pressure? ") ;
+      Serial.print("Use relative pressure? ") ;
       if(bRelativePressure)
+        Serial.println("Yes") ;
+      else
+        Serial.println("No") ;
+    }
+    else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'Y'){                //Use Daylight Savings Time
+      if(inputBuffer[2] == 'Y')
+        bUseDST = true ;
+      else if(inputBuffer[2] == 'N')
+        bUseDST = false ;
+
+      Serial.print("Use DST? ") ;
+      if(bUseDST)
         Serial.println("Yes") ;
       else
         Serial.println("No") ;
@@ -899,7 +1045,7 @@ void recieveSerial(){
   
       dateFrequency = toWrite.toInt() ;
 
-      Serial.print("Cycles per date display: ") ;
+      Serial.print("Cycles per date show: ") ;
       Serial.println(dateFrequency) ;
     }
     else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'T'){                //Time display duration
@@ -910,7 +1056,7 @@ void recieveSerial(){
       }
   
       displayStagePrimaryDuration = toWrite.toFloat() ;
-      Serial.print("Primary display duration: ") ;
+      Serial.print("Primary show duration: ") ;
       Serial.print(displayStagePrimaryDuration) ;
       Serial.println("ms") ;
     }
@@ -922,7 +1068,7 @@ void recieveSerial(){
       }
   
       displayStageDuration = toWrite.toFloat() ;
-      Serial.print("Secondary display duration: ") ;
+      Serial.print("Secondary show duration: ") ;
       Serial.print(displayStageDuration) ;
       Serial.println("ms") ;
     }
@@ -938,11 +1084,12 @@ void recieveSerial(){
       }
       altitudeM = 132 ;                                   //Burtonsville, MD
       bDisplaySeconds = true ;
-      bRelativePressure = true ;
+      bRelativePressure = false ;
       dateFrequency = 3 ;                                 
       displayStageDuration = 3000 ;
       displayStagePrimaryDuration = 25000 ;    
       bDriverLightEnable = true ;
+      bUseDST = true ;
       Serial.println("Defaults restored") ;                  
     }
     else if(inputBuffer[0] == 'L' && inputBuffer[1] == 'D'){                //Load from eeprom
@@ -955,6 +1102,7 @@ void recieveSerial(){
       displayStageDuration = readFromEEPROM.displayStageDuration ;
       displayStagePrimaryDuration = readFromEEPROM.displayStagePrimaryDuration ;
       bDriverLightEnable = readFromEEPROM.bDriverLightEnable ;
+      bUseDST = readFromEEPROM.bUseDST ;
     
       if(!bDriverLightEnable)                                             
         allTubes('Q') ;
@@ -962,15 +1110,26 @@ void recieveSerial(){
         allTubes('L') ;
       Serial.println("EEPROM loaded") ;
     }
-    else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'X'){                //Load from eeprom
+    else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'X'){                //Set driver LED disable
       allTubes('Q') ;
       bDriverLightEnable = false ;
-      Serial.println("Driver LEDs disabled") ;
+      Serial.println("Driver LEDs off") ;
     }
-    else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'L'){                //Load from eeprom
+    else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'L'){                //Set driver LED enable
       allTubes('L') ;
       bDriverLightEnable = true ;
-      Serial.println("Driver LEDs enabled") ;
+      Serial.println("Driver LEDs on") ;
+    }
+    else if(inputBuffer[0] == 'S' && inputBuffer[1] == 'R'){                //Set RTC time
+      
+      counter = 2 ;
+      while(counter < 22){
+        toWrite += inputBuffer[counter] ;
+        counter++ ;
+      }
+      RTC.set(toWrite.toInt()) ;
+      setSyncProvider(RTC.get) ;
+      Serial.println("RTC time set!") ;
     }
     else if(inputBuffer[0] == 'E' && inputBuffer[1] == 'E' && inputBuffer[2] == 'P' && 
           inputBuffer[3] == 'R' && inputBuffer[4] == 'O' && inputBuffer[5] == 'M'){                //Write to eeprom
@@ -982,6 +1141,7 @@ void recieveSerial(){
       readFromEEPROM.displayStageDuration = displayStageDuration ;
       readFromEEPROM.displayStagePrimaryDuration = displayStagePrimaryDuration ;
       readFromEEPROM.bDriverLightEnable = bDriverLightEnable ;
+      readFromEEPROM.bUseDST = bUseDST ;
 
       EEPROM.put(0, readFromEEPROM) ;
 
