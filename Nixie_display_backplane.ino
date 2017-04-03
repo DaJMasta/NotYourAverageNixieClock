@@ -1,12 +1,18 @@
 /*
  * Nixie_Display_Backplane by Jonathan Zepp - @DaJMasta
- * Version 3.2 - March 17, 2016
+ * Version 3.3 - April 1, 2017
  * For the Not Your Average Nixie Clock project
  * 
  * Programmed to an arduino nano in the backplane, this software reads the required sensors and controls the driver boards.  Includes
  * an RTC, a temperature and humidity sensor, a barometric pressure sensor, a potentiometer to control brightness, and a capacitive
  * touch sensor to change display modes easily.  Reports actions and errors over a host serial connection and the display can be
  * fully controlled through it.  Translates String input to each tube and checks if they are capable of displaying the character needed.
+ * 
+ * ver 3.3 changes:
+ * adjusted digit display count to not lose a digit when automatic rounding kicks in in the thousandths place
+ * adjusted tempOffset for accuracy (and converted to Celcius for easier math)
+ * added compensation for relative humidity read at a higher temperature (inside the clock) than displayed
+ * adjusted capsense reading window to accept smaller fingers more easily
  * 
  * ver 3.2 changes: 
  * added serial command to set the RTC without having to reflash the chip and use a different sketch
@@ -19,6 +25,8 @@
  * SFE_BMP180 library 1.1.2 https://github.com/sparkfun/BMP180_Breakout_Arduino_Library/tree/V_1.1.2
  * CapacitiveSensor 05 https://github.com/PaulStoffregen/CapacitiveSensor
  */
+
+#define euler 2.718281828
 
 #define minPot 512
 #define maxBrightness 255
@@ -36,7 +44,7 @@
 #define sequentialTestDuration 750
 #define sensorReadDelay 3000
 #define inputPollDelay 33                                             //30 FPS touch speed
-#define tempOffset -6.7
+#define tempOffsetC -3.5556
 #define shortPressReset 10000
 
 #include <dht.h>
@@ -296,11 +304,11 @@ void calcBrightness(){
 }
 
 void readTempHumPres(){
-  double toSend ;
+  double toSend, tempC, tempHum ;
   byte status ;
   
   tempHumSensor.read22(dhtPin) ;
-  fahrenheit = tempHumSensor.temperature ;
+  tempC = tempHumSensor.temperature ;
   humidity = tempHumSensor.humidity ;
 
   status = pressureSensor.startTemperature() ;
@@ -320,10 +328,16 @@ void readTempHumPres(){
         }
       }
    }
-  fahrenheit += barometerTemperature ;
-  fahrenheit /= 2 ;
-  fahrenheit *= 1.8 ;
-  fahrenheit += 32 + tempOffset ;
+  tempC += barometerTemperature ;
+  tempC /= 2 ;
+
+  tempHum = 110.13824 * pow(euler, ((17.67 * tempC) / (tempC + 243.5))) * humidity ;
+  tempHum /= ((273.15 + tempC) * 8.314) ;                                           //tempHum not contains Absolute Humidity (constants good to ~ -35C to +35C)
+  tempHum *= ((273.15 + tempC + tempOffsetC) * 8.314) ;
+  humidity = tempHum / (110.13824 * pow(euler, ((17.67 * (tempC + tempOffsetC)) / (tempC + tempOffsetC + 243.5)))) ;         //Relative Humidity now adjusted for displayed temperature
+  
+  fahrenheit = 1.8 * (tempC + tempOffsetC) ;
+  fahrenheit += 32 ;
 }
 
 int dow(int y, int m, int d){                                         //Sakamoto's Algorithm
@@ -527,9 +541,9 @@ String dateDisplay(){
 String tempDisplay(){
   String toReturn = " " ;
 
-  if(fahrenheit < 100.0)
+  if(fahrenheit < 99.995)
     toReturn += " " ;
-  if(fahrenheit < 10.0)
+  if(fahrenheit < 9.995)
     toReturn += " " ;
 
   toReturn += fahrenheit ;
@@ -540,9 +554,9 @@ String tempDisplay(){
 
 String humDisplay(){
   String toReturn = "  " ;
-  if(humidity < 100.0)
+  if(humidity < 99.995)
     toReturn += " " ;
-  if(humidity < 10.0)
+  if(humidity < 9.995)
     toReturn += " " ;
 
   toReturn += humidity ;
@@ -557,7 +571,7 @@ String pressureDisplay(){
   float displayPressure = relPressure * 0.1 ;
   if(!bRelativePressure)
     displayPressure = pressure * 0.1 ;
-  if(displayPressure < 100.0)
+  if(displayPressure < 99.995)
     toReturn += " " ;
 
   toReturn += displayPressure ;
@@ -664,7 +678,7 @@ void listDrivers(){
                 break ;
       }
       switch(tubeStates[i]){
-        case 'E': Serial.print(" is showing: ") ;
+        case 'E': Serial.print(", showing: ") ;
                   Serial.print(currentDisplays[i]) ;
                   break ;
         case 'D': Serial.print(" and is disabled") ;
@@ -793,14 +807,14 @@ void mapToDisplay(String toDisplay){
     else {
       Serial.print("Tube ") ;
       Serial.print(i) ;
-      Serial.print(" can't display: ") ;
+      Serial.print(" can't show: ") ;
       Serial.println(toDisplay.charAt(i + decimalOffset)) ;
     }
 
     if(tubeTypes[i] != 2 && writeDecimals[i]){
       Serial.print("Tube ") ;
       Serial.print(i) ;
-      Serial.println(" can't display: .") ;
+      Serial.println(" can't show: .") ;
     }
   }
 }
@@ -825,13 +839,13 @@ byte requiredTube(char toDisplay){
 bool checkTouch(){
   int check = displayHousing.capacitiveSensor(100) ;
   
-  if(check > 2250)
+  if(check > 2230)
     return true ;
   return false ;
 }
 
 void fullReport(){  
-  Serial.println("Full readout:") ;
+  Serial.println("Full data:") ;
   Serial.print("Uptime: ") ;
   Serial.print(millis()) ;
   Serial.print(", time: ") ;
@@ -1090,7 +1104,7 @@ void recieveSerial(){
       displayStagePrimaryDuration = 25000 ;    
       bDriverLightEnable = true ;
       bUseDST = true ;
-      Serial.println("Defaults restored") ;                  
+      Serial.println("Defaults loaded") ;                  
     }
     else if(inputBuffer[0] == 'L' && inputBuffer[1] == 'D'){                //Load from eeprom
       EEPROM.get(0, readFromEEPROM) ;

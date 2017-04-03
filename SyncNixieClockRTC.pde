@@ -73,6 +73,6 @@ long getTimeNow(){
   Calendar cal = new GregorianCalendar();
   long current = d.getTime()/1000;
   long timezone = cal.get(cal.ZONE_OFFSET)/1000;
-  long daylight = cal.get(cal.DST_OFFSET)/1000;
+  long daylight = 0 ; // cal.get(cal.DST_OFFSET)/1000;                                      Not needed with auto DST in clock
   return current + timezone + daylight; 
 }
